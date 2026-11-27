@@ -113,3 +113,47 @@ jobs:
         run: |
           docker push "${IMAGE_NAME}:${GITHUB_SHA}"
           docker push "${IMAGE_NAME}:latest"
+
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, devops-vm]
+    permissions:
+      contents: read
+    concurrency:
+      group: deploy-devops-vm
+      cancel-in-progress: false
+    steps:
+      - name: Checkout with deploy sources
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Ansible collections
+        working-directory: ansible
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Deploy to VM with Ansible
+        working-directory: ansible
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 0700 -d ~/.ssh
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/devops_vm
+          chmod 600 ~/.ssh/devops_vm
+          ansible-playbook -i inventory/prod.ini site.yml -e app_tag="$GITHUB_SHA"
+
+      - name: Verify deployment
+        working-directory: ansible
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 0700 -d ~/.ssh
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/devops_vm
+          chmod 600 ~/.ssh/devops_vm
+          ansible-playbook -i inventory/prod.ini verify.yml -e app_tag="$GITHUB_SHA"
+          curl --fail --silent --show-error http://192.168.56.101/health
+          echo
+          echo "Deployed commit SHA: $GITHUB_SHA"
